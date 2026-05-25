@@ -1351,53 +1351,7 @@ function renderGitHubConfig(container) {
 window.addEventListener('DOMContentLoaded', router);
 window.addEventListener('hashchange', router);
 
-// Test connection button click handler
-  document.getElementById('testGhBtn').addEventListener('click', async () => {
-    const btn=document.getElementById('testGhBtn'), status=document.getElementById('ghTestStatus');
-    // Save credentials first
-    const token=document.getElementById('ghToken').value.trim();
-    const owner=document.getElementById('ghOwner').value.trim();
-    const repo=document.getElementById('ghRepo').value.trim();
-    
-    if(!token||!owner||!repo){
-      toast('Fill in all fields first.','error');
-      return;
-    }
-    
-    DB.saveConfig({token,owner,repo}); 
-    DB._shas={};
-    btn.disabled=true; 
-    btn.innerHTML='<span class="spinner"></span> Testing…'; 
-    status.textContent='';
-    
-    try {
-      const repoData=await DB.testConnection();
-      status.style.color='#1f6b2c';
-      status.textContent=`✓ Connected to ${repoData.full_name} (${repoData.private?'private':'public'})`;
-      toast('GitHub connection successful!');
-      
-      const badge=document.getElementById('ghStatusBadge');
-      if(badge){
-        badge.className='gh-status connected';
-        badge.innerHTML='<span class="gh-dot"></span>GitHub connected';
-      }
 
-      // --- AUTOMATIC REDIRECT ---
-      // Delays for 1.5 seconds so the user can read the success message, then routes to cms.html
-      setTimeout(() => {
-        window.location.href = 'cms.html';
-      }, 1500);
-      // --------------------------
-
-    } catch(e) {
-      status.style.color='#d63638';
-      status.textContent='✗ ' + e.message;
-      toast('Connection failed: '+e.message,'error');
-    }
-    
-    btn.disabled=false; 
-    btn.textContent='Test Connection';
-  });
   
 </script>
 </body>
