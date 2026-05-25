@@ -1,6 +1,6 @@
 [
   {
-    "id": "mpl70v16tqcnh",
+    "id": "mpl72ea2fsh6g",
     "title": "Beginning PHP 5.3 by Matt Doyle",
     "description": "If you're looking for a book that truly builds a solid foundation for web development, \"Beginning PHP 5.3\" by Matt Doyle is an excellent choice. It's a comprehensive guide from Works that starts from the absolute basics, assuming no prior programming experience, which makes it incredibly accessible .\n\nWhat helped you the most was likely its practical, hands-on approach. It doesn't just explain theory; it guides you through building real web application components step-by-step. You get to learn by doing, covering essential skills like:\n\nProcessing Forms & User Input: Handling data submitted through HTML forms and learning to validate it securely .\n\nDatabase Integration: Several chapters are dedicated to working with MySQL, teaching you how to connect to a database, perform queries, and manage data—a crucial skill for dynamic websites .\n\nState Management: Mastering essential techniques like using cookies and sessions to \"remember\" user information as they navigate your site (e.g., building a login system) .\n\nBeyond the Basics: It also introduces practical, in-demand topics like generating dynamic images, using regular expressions for pattern matching, and working with XML .",
     "url": "https://www.dropbox.com/scl/fi/rxf4f7i59897ggkb2eles/Beginning-PHP-5.3-by-Matt-Doyle.pdf?rlkey=2j7g7es2lv0jep81a4gzoezce&st=fb23kb7v&dl=0"
