@@ -274,6 +274,18 @@ img{max-width:100%;height:auto}
    All JSON files live in the root of the configured repo.
    Session/credentials are still kept in localStorage (client-only).
    ============================================================ */
+
+/* ============================================================
+   ★ HARDCODED DEFAULTS — edit these so the CMS works on any
+     origin (GitHub Pages, file://, etc.) without re-entering
+     your credentials. Leave blank ('') to require manual setup.
+   ============================================================ */
+const GH_DEFAULTS = {
+  token : '',   // e.g. 'ghp_xxxxxxxxxxxxxxxxxxxx'
+  owner : '',   // e.g. 'your-github-username'
+  repo  : '',   // e.g. 'my-cms-repo'
+};
+
 const DB = {
   /* ---- Session (stays in localStorage — never goes to GitHub) ---- */
   SESSION: 'mycms_session',
@@ -283,9 +295,20 @@ const DB = {
   setSession(s) { localStorage.setItem(this.SESSION, JSON.stringify(s)) },
   clearSession(){ localStorage.removeItem(this.SESSION) },
 
-  /* ---- GitHub configuration ---- */
+  /* ---- GitHub configuration ----
+     Priority: 1) localStorage (set via Admin UI)
+               2) GH_DEFAULTS hardcoded above
+     This means the site works out-of-the-box on any origin
+     if GH_DEFAULTS is filled in, and the Admin UI can still
+     override it at runtime without touching the file.        */
   getConfig() {
-    try { return JSON.parse(localStorage.getItem(this.GH_CONFIG) || 'null') } catch { return null }
+    try {
+      const stored = JSON.parse(localStorage.getItem(this.GH_CONFIG) || 'null');
+      if (stored && stored.token && stored.owner && stored.repo) return stored;
+    } catch {}
+    // Fall back to hardcoded defaults if all three fields are present
+    if (GH_DEFAULTS.token && GH_DEFAULTS.owner && GH_DEFAULTS.repo) return { ...GH_DEFAULTS };
+    return null;
   },
   saveConfig(c) { localStorage.setItem(this.GH_CONFIG, JSON.stringify(c)) },
   isConfigured() { const c = this.getConfig(); return !!(c && c.token && c.owner && c.repo) },
@@ -416,6 +439,10 @@ function buildMediaEmbed(url) {
    ROUTER
    ============================================================ */
 async function router() {
+  /* Normalise bare URL (no hash) to #/ so public home is always the landing page */
+  if (!location.hash || location.hash === '#') {
+    history.replaceState(null, '', '#/');
+  }
   const { parts } = parseHash();
   const hash = location.hash || '#/';
   if (hash.startsWith('#/login'))   { renderLogin(); return }
@@ -438,24 +465,19 @@ async function renderPublic(parts) {
     <footer class="site-footer"><div class="container"></div></footer>`;
   }
 
-  if (!DB.isConfigured()) {
-    document.body.className = 'login-body';
-    document.body.innerHTML = `
-    <div class="login-wrap">
-      <h1 class="login-logo"><span class="logo-dot"></span>MyCMS</h1>
-      <div class="login-card">
-        <div class="wp-notice warning">GitHub is not configured. <a href="#/admin">Go to Admin → GitHub Config</a> to set up your repository.</div>
-      </div>
-    </div>`;
-    return;
-  }
+  /* Load settings & posts — use safe defaults when GitHub is not yet configured */
+  let settings = { siteTitle: 'MyCMS', tagline: 'Welcome' };
+  let posts = [];
+  const configured = DB.isConfigured();
 
-  let settings, posts;
-  try {
-    [settings, posts] = await Promise.all([DB.getSettings(), DB.getPosts()]);
-  } catch(e) {
-    document.getElementById('publicContent').innerHTML = `<div class="empty-state"><h3>Could not load content</h3><p>${escapeHtml(e.message)}</p></div>`;
-    return;
+  if (configured) {
+    try {
+      [settings, posts] = await Promise.all([DB.getSettings(), DB.getPosts()]);
+    } catch(e) {
+      const errEl = document.getElementById('publicContent');
+      if (errEl) errEl.innerHTML = `<div class="empty-state"><h3>Could not load content</h3><p>${escapeHtml(e.message)}</p></div>`;
+      return;
+    }
   }
 
   const pubPosts = posts.filter(p => p.status==='published').sort((a,b) => new Date(b.date)-new Date(a.date));
@@ -496,7 +518,13 @@ async function renderPublic(parts) {
 
   if (!page) {
     document.querySelector('[data-nav="home"]').classList.add('active');
-    content.innerHTML = `<div class="page-head"><h1 class="page-title">${escapeHtml(settings.siteTitle)}</h1><p class="page-desc">${escapeHtml(settings.tagline)}</p></div>`;
+    const setupBanner = !configured
+      ? `<div class="wp-notice warning" style="max-width:760px;margin:0 auto 28px">
+           ⚙️ <strong>GitHub not configured.</strong>
+           <a href="#/admin">Go to Admin → GitHub Config</a> to connect your repository and publish content.
+         </div>`
+      : '';
+    content.innerHTML = `${setupBanner}<div class="page-head"><h1 class="page-title">${escapeHtml(settings.siteTitle)}</h1><p class="page-desc">${escapeHtml(settings.tagline)}</p></div>`;
     renderPostGrid(content, pubPosts);
 
   } else if (page === 'post' && parts[1]) {
@@ -1231,14 +1259,32 @@ async function renderSettings(container) {
    ============================================================ */
 function renderGitHubConfig(container) {
   const cfg = DB.getConfig() || {};
+  const storedCfg = (() => { try { return JSON.parse(localStorage.getItem(DB.GH_CONFIG)||'null') } catch { return null } })();
+  const usingDefaults = !storedCfg && GH_DEFAULTS.token && GH_DEFAULTS.owner && GH_DEFAULTS.repo;
+  const defaultsFilled = GH_DEFAULTS.token && GH_DEFAULTS.owner && GH_DEFAULTS.repo;
+
+  const defaultsBanner = defaultsFilled
+    ? `<div class="wp-notice success" style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:18px">✅</span>
+        <div><strong>Hardcoded defaults are set</strong> in the <code>GH_DEFAULTS</code> block — the CMS works on any origin automatically.
+        ${usingDefaults ? 'Currently <strong>active</strong> (no localStorage override).' : 'A localStorage override is currently active (saved below).'}</div>
+       </div>`
+    : `<div class="wp-notice warning">
+        <strong>Hardcoded defaults are empty.</strong> Fill in the <code>GH_DEFAULTS</code> block at the top of <code>cms.html</code> so the CMS works on every origin without re-entering credentials:
+        <pre style="margin:8px 0 0;padding:10px;background:#f6f7f7;border-radius:4px;font-size:12px;overflow-x:auto">const GH_DEFAULTS = {\n  token : 'ghp_xxxxxxxxxxxxxxxxxxxx',\n  owner : 'your-username',\n  repo  : 'your-repo-name',\n};</pre>
+       </div>`;
+
   container.innerHTML = `
     <div style="max-width:680px">
-      <div class="wp-notice">Your GitHub Personal Access Token is stored only in your browser's localStorage and is never sent anywhere except the GitHub API directly from your browser.</div>
-      <div class="wp-card"><div class="wp-card-header"><h2 class="wp-card-title">GitHub Repository</h2></div>
+      ${defaultsBanner}
+      <div class="wp-notice" style="font-size:13px">Your token is stored only in your browser and sent only to the GitHub API — never anywhere else.</div>
+      <div class="wp-card"><div class="wp-card-header"><h2 class="wp-card-title">Runtime Override (this browser only)</h2>
+        <span style="font-size:12px;color:var(--wp-gray-50)">Overrides hardcoded defaults on this device</span>
+      </div>
       <div class="wp-card-body">
         <div class="gh-config-grid">
           <div class="form-row gh-token-row">
-            <label class="form-label">Personal Access Token (classic) *</label>
+            <label class="form-label">Personal Access Token (classic)</label>
             <div class="token-input-wrap">
               <input type="password" class="form-input" id="ghToken" value="${escapeHtml(cfg.token||'')}" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx">
               <button class="token-toggle" id="tokenToggle" type="button">Show</button>
@@ -1246,17 +1292,18 @@ function renderGitHubConfig(container) {
             <div class="form-hint">Needs <strong>repo</strong> scope. <a href="https://github.com/settings/tokens/new?scopes=repo&description=MyCMS" target="_blank" rel="noopener">Generate one on GitHub →</a></div>
           </div>
           <div class="form-row">
-            <label class="form-label">GitHub Username / Org *</label>
+            <label class="form-label">GitHub Username / Org</label>
             <input type="text" class="form-input" id="ghOwner" value="${escapeHtml(cfg.owner||'')}" placeholder="your-username">
           </div>
           <div class="form-row">
-            <label class="form-label">Repository Name *</label>
+            <label class="form-label">Repository Name</label>
             <input type="text" class="form-input" id="ghRepo" value="${escapeHtml(cfg.repo||'')}" placeholder="my-cms-repo">
           </div>
         </div>
-        <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+        <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;align-items:center">
           <button class="btn btn-success" id="testGhBtn">Test Connection</button>
-          <button class="btn btn-primary" id="saveGhBtn">Save Configuration</button>
+          <button class="btn btn-primary" id="saveGhBtn">Save to localStorage</button>
+          ${storedCfg ? '<button class="btn btn-danger" id="clearGhBtn">Clear Override</button>' : ''}
           <span id="ghTestStatus" style="font-size:13px;line-height:36px"></span>
         </div>
       </div></div>
@@ -1266,12 +1313,12 @@ function renderGitHubConfig(container) {
         <ol style="padding-left:20px;margin:0">
           <li>Create a <strong>public or private GitHub repository</strong> for your CMS content.</li>
           <li>Generate a <a href="https://github.com/settings/tokens/new?scopes=repo&description=MyCMS" target="_blank">Personal Access Token</a> with <code>repo</code> scope.</li>
-          <li>Enter your token, username, and repo name above and click <strong>Save Configuration</strong>.</li>
-          <li>Click <strong>Test Connection</strong> to verify everything works.</li>
-          <li>MyCMS will automatically create <code>posts.json</code>, <code>settings.json</code>, <code>about.json</code>, <code>gallery.json</code>, and <code>downloads.json</code> in your repo when you first save content.</li>
+          <li><strong>Recommended (permanent fix):</strong> Edit the <code>GH_DEFAULTS</code> block near the top of <code>cms.html</code>, commit the file — works on every origin forever.</li>
+          <li><strong>Quick fix:</strong> Use the form above to save credentials to localStorage on this browser only.</li>
+          <li>MyCMS will automatically create <code>posts.json</code>, <code>settings.json</code>, <code>about.json</code>, <code>gallery.json</code>, and <code>downloads.json</code> in your repo on first save.</li>
         </ol>
         <div style="margin-top:16px;padding:12px;background:var(--wp-gray-5);border-radius:4px;font-size:13px">
-          <strong>Tip for GitHub Pages:</strong> Host this <code>cms.html</code> file in the same repo and it becomes your full website — content and CMS in one place. Set GitHub Pages source to your <code>main</code> branch.
+          <strong>Tip for GitHub Pages:</strong> Host <code>cms.html</code> in your repo with <code>GH_DEFAULTS</code> filled in. Set GitHub Pages source to <code>main</code> — your site and CMS live in one file.
         </div>
       </div></div>
     </div>`;
@@ -1281,6 +1328,16 @@ function renderGitHubConfig(container) {
     if(inp.type==='password'){inp.type='text';btn.textContent='Hide'}else{inp.type='password';btn.textContent='Show'}
   });
 
+  if (storedCfg) {
+    document.getElementById('clearGhBtn').addEventListener('click', () => {
+      if (!confirm('Remove localStorage override? The hardcoded GH_DEFAULTS will be used instead.')) return;
+      localStorage.removeItem(DB.GH_CONFIG);
+      DB._shas={};
+      toast('Override cleared. Using GH_DEFAULTS now.');
+      renderGitHubConfig(container);
+    });
+  }
+
   document.getElementById('saveGhBtn').addEventListener('click', () => {
     const token=document.getElementById('ghToken').value.trim();
     const owner=document.getElementById('ghOwner').value.trim();
@@ -1288,60 +1345,33 @@ function renderGitHubConfig(container) {
     if(!token||!owner||!repo){toast('All three fields are required.','error');return}
     DB.saveConfig({token,owner,repo});
     DB._shas={};
-    toast('GitHub configuration saved!');
-    document.getElementById('ghTestStatus').style.color='#1f6b2c';
-    document.getElementById('ghTestStatus').textContent='Config saved — click Test Connection to verify.';
-    // Update topbar badge
+    toast('Saved to localStorage!');
     const badge=document.getElementById('ghStatusBadge');
     if(badge){badge.className='gh-status connected';badge.innerHTML='<span class="gh-dot"></span>GitHub connected'}
+    renderGitHubConfig(container);
   });
 
-// Test connection button click handler
   document.getElementById('testGhBtn').addEventListener('click', async () => {
     const btn=document.getElementById('testGhBtn'), status=document.getElementById('ghTestStatus');
-    // Save credentials first
     const token=document.getElementById('ghToken').value.trim();
     const owner=document.getElementById('ghOwner').value.trim();
     const repo=document.getElementById('ghRepo').value.trim();
-    
-    if(!token||!owner||!repo){
-      toast('Fill in all fields first.','error');
-      return;
-    }
-    
-    DB.saveConfig({token,owner,repo}); 
-    DB._shas={};
-    btn.disabled=true; 
-    btn.innerHTML='<span class="spinner"></span> Testing…'; 
-    status.textContent='';
-    
+    if(!token||!owner||!repo){toast('Fill in all fields first.','error');return}
+    DB.saveConfig({token,owner,repo}); DB._shas={};
+    btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Testing…'; status.textContent='';
     try {
       const repoData=await DB.testConnection();
       status.style.color='#1f6b2c';
       status.textContent=`✓ Connected to ${repoData.full_name} (${repoData.private?'private':'public'})`;
       toast('GitHub connection successful!');
-      
       const badge=document.getElementById('ghStatusBadge');
-      if(badge){
-        badge.className='gh-status connected';
-        badge.innerHTML='<span class="gh-dot"></span>GitHub connected';
-      }
-
-      // --- AUTOMATIC REDIRECT ---
-      // Delays for 1.5 seconds so the user can read the success message, then routes to cms.html
-      setTimeout(() => {
-        window.location.href = 'cms.html';
-      }, 1500);
-      // --------------------------
-
+      if(badge){badge.className='gh-status connected';badge.innerHTML='<span class="gh-dot"></span>GitHub connected'}
     } catch(e) {
       status.style.color='#d63638';
       status.textContent='✗ ' + e.message;
       toast('Connection failed: '+e.message,'error');
     }
-    
-    btn.disabled=false; 
-    btn.textContent='Test Connection';
+    btn.disabled=false; btn.textContent='Test Connection';
   });
 }
 
@@ -1350,9 +1380,6 @@ function renderGitHubConfig(container) {
    ============================================================ */
 window.addEventListener('DOMContentLoaded', router);
 window.addEventListener('hashchange', router);
-
-
-  
 </script>
 </body>
 </html>
