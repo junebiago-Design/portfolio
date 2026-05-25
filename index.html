@@ -270,56 +270,80 @@ img{max-width:100%;height:auto}
 <body>
 <script>
 /* ============================================================
-   GITHUB DB — replaces localStorage with GitHub REST API
-   All JSON files live in the root of the configured repo.
-   Session/credentials are still kept in localStorage (client-only).
-   ============================================================ */
+   DUAL-MODE DATABASE LAYER
+   ─────────────────────────────────────────────────────────────
+   PUBLIC  (Visitor Mode)
+     • No token required. Reads JSON via jsDelivr CDN first,
+       falls back to raw.githubusercontent.com.
+     • Zero GitHub API rate-limit consumption for visitors.
+     • Works on any origin, any device, no login needed.
 
-/* ============================================================
-   ★ HARDCODED DEFAULTS — edit these so the CMS works on any
-     origin (GitHub Pages, file://, etc.) without re-entering
-     your credentials. Leave blank ('') to require manual setup.
-   ============================================================ */
+   ADMIN   (Authenticated Write Mode)
+     • Reads via authenticated GitHub Contents API so the SHA
+       is returned (required for updating files).
+     • Writes via PUT to github.com/repos/.../contents/...
+       using the stored Personal Access Token.
+   ──────────────────────────────────────────────────────────── */
+
+/* ★ HARDCODE YOUR REPO HERE — visitors will read from these
+     endpoints automatically without any login or config.
+     The admin can still override owner/repo via localStorage. */
 const GH_DEFAULTS = {
-  token : '',   // e.g. 'ghp_xxxxxxxxxxxxxxxxxxxx'
   owner : '',   // e.g. 'your-github-username'
-  repo  : '',   // e.g. 'my-cms-repo'
+  repo  : '',   // e.g. 'your-repo-name'
+  branch: 'main'
 };
 
 const DB = {
-  /* ---- Session (stays in localStorage — never goes to GitHub) ---- */
-  SESSION: 'mycms_session',
+  /* ── Session (client-only, never sent to GitHub) ── */
+  SESSION  : 'mycms_session',
   GH_CONFIG: 'mycms_gh_config',
 
   getSession()  { try { return JSON.parse(localStorage.getItem(this.SESSION) || 'null') } catch { return null } },
   setSession(s) { localStorage.setItem(this.SESSION, JSON.stringify(s)) },
   clearSession(){ localStorage.removeItem(this.SESSION) },
 
-  /* ---- GitHub configuration ----
-     Priority: 1) localStorage (set via Admin UI)
-               2) GH_DEFAULTS hardcoded above
-     This means the site works out-of-the-box on any origin
-     if GH_DEFAULTS is filled in, and the Admin UI can still
-     override it at runtime without touching the file.        */
+  /* ── GitHub configuration ──────────────────────────────────
+     Priority:  1) localStorage (set via Admin → GitHub Config)
+                2) GH_DEFAULTS hardcoded above
+     The token is ONLY needed for admin writes.
+     Owner + repo alone are enough for public reads.            */
   getConfig() {
     try {
       const stored = JSON.parse(localStorage.getItem(this.GH_CONFIG) || 'null');
-      if (stored && stored.token && stored.owner && stored.repo) return stored;
+      if (stored && stored.owner && stored.repo) return stored;
     } catch {}
-    // Fall back to hardcoded defaults if all three fields are present
-    if (GH_DEFAULTS.token && GH_DEFAULTS.owner && GH_DEFAULTS.repo) return { ...GH_DEFAULTS };
+    if (GH_DEFAULTS.owner && GH_DEFAULTS.repo) return { ...GH_DEFAULTS };
     return null;
   },
   saveConfig(c) { localStorage.setItem(this.GH_CONFIG, JSON.stringify(c)) },
-  isConfigured() { const c = this.getConfig(); return !!(c && c.token && c.owner && c.repo) },
 
-  /* ---- Low-level GitHub Contents API helpers ---- */
-  _headers() {
+  /* isConfigured → TRUE as long as owner+repo are known.
+     Writes additionally require a token (checked in _putFile). */
+  isConfigured() { const c = this.getConfig(); return !!(c && c.owner && c.repo) },
+  hasWriteAccess(){ const c = this.getConfig(); return !!(c && c.token && c.owner && c.repo) },
+
+  /* ── CDN / public read URLs ─────────────────────────────── */
+  _cdnUrl(file) {
+    const c = this.getConfig();
+    const branch = c.branch || 'main';
+    // jsDelivr has a global CDN with ~10 min cache — fastest for visitors
+    return `https://cdn.jsdelivr.net/gh/${c.owner}/${c.repo}@${branch}/${file}`;
+  },
+  _rawUrl(file) {
+    const c = this.getConfig();
+    const branch = c.branch || 'main';
+    // raw.githubusercontent.com — authoritative, no cache
+    return `https://raw.githubusercontent.com/${c.owner}/${c.repo}/${branch}/${file}`;
+  },
+
+  /* ── Authenticated API helpers (admin write path) ────────── */
+  _authHeaders() {
     const c = this.getConfig();
     return {
       'Authorization': `token ${c.token}`,
-      'Accept': 'application/vnd.github.v3+json',
-      'Content-Type': 'application/json'
+      'Accept'       : 'application/vnd.github.v3+json',
+      'Content-Type' : 'application/json'
     };
   },
   _apiUrl(file) {
@@ -327,71 +351,107 @@ const DB = {
     return `https://api.github.com/repos/${c.owner}/${c.repo}/contents/${file}`;
   },
 
-  /* Fetch a JSON file from the repo. Returns { data, sha } or { data: default, sha: null } */
-  async _getFile(file, defaultVal = null) {
-    const resp = await fetch(this._apiUrl(file), { headers: this._headers() });
+  /* ── Core READ: visitor-safe, unauthenticated ──────────────
+     1. Try jsDelivr CDN  (fast, cached, no rate limit)
+     2. Fallback raw.githubusercontent.com  (authoritative)
+     3. Return defaultVal on 404 / network error              */
+  async _publicGet(file, defaultVal = null) {
+    // Try CDN first
+    try {
+      const r = await fetch(this._cdnUrl(file), { cache: 'no-cache' });
+      if (r.ok) return { data: await r.json(), sha: null };
+      if (r.status !== 404) throw new Error(`CDN ${r.status}`);
+    } catch(e) {
+      // CDN failed — try raw fallback
+    }
+    try {
+      const r = await fetch(this._rawUrl(file));
+      if (r.ok) return { data: await r.json(), sha: null };
+      if (r.status === 404) return { data: defaultVal, sha: null };
+    } catch {}
+    return { data: defaultVal, sha: null };
+  },
+
+  /* ── Core READ: authenticated (admin, returns sha for PUT) ── */
+  async _authGet(file, defaultVal = null) {
+    const resp = await fetch(this._apiUrl(file), { headers: this._authHeaders() });
     if (resp.status === 404) return { data: defaultVal, sha: null };
-    if (!resp.ok) throw new Error(`GitHub API error ${resp.status}: ${resp.statusText}`);
+    if (!resp.ok) throw new Error(`GitHub API ${resp.status}: ${resp.statusText}`);
     const meta = await resp.json();
     const content = atob(meta.content.replace(/\n/g, ''));
     return { data: JSON.parse(content), sha: meta.sha };
   },
 
-  /* Write a JSON file to the repo. sha is required for updates, null for creates. */
+  /* ── Smart dispatcher: use auth path when token present ───── */
+  async _getFile(file, defaultVal = null) {
+    if (this.hasWriteAccess()) {
+      return this._authGet(file, defaultVal);
+    }
+    return this._publicGet(file, defaultVal);
+  },
+
+  /* ── Write (always authenticated, requires token) ────────── */
   async _putFile(file, data, sha, message) {
+    if (!this.hasWriteAccess()) throw new Error('No GitHub token configured. Go to Admin → GitHub Config.');
     const content = btoa(unescape(encodeURIComponent(JSON.stringify(data, null, 2))));
     const body = { message: message || `Update ${file} via MyCMS`, content };
     if (sha) body.sha = sha;
     const resp = await fetch(this._apiUrl(file), {
-      method: 'PUT',
-      headers: this._headers(),
-      body: JSON.stringify(body)
+      method : 'PUT',
+      headers: this._authHeaders(),
+      body   : JSON.stringify(body)
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       throw new Error(err.message || `GitHub write error ${resp.status}`);
     }
-    const result = await resp.json();
-    return result.content.sha; // new sha
+    return (await resp.json()).content.sha;
   },
 
-  /* ---- SHA cache to avoid double fetches on save ---- */
+  /* ── SHA cache (needed for PUT conflict avoidance) ────────── */
   _shas: {},
   async _cachedGet(file, defaultVal) {
     const { data, sha } = await this._getFile(file, defaultVal);
-    this._shas[file] = sha;
+    if (sha) this._shas[file] = sha;   // only cache when auth path returns it
     return data;
   },
   async _cachedPut(file, data, msg) {
-    const sha = this._shas[file] || null;
-    const newSha = await this._putFile(file, data, sha, msg);
+    /* If we don't have a SHA yet (e.g. first write after public read),
+       fetch it via the authenticated path so the PUT can succeed.     */
+    if (!this._shas[file] && this.hasWriteAccess()) {
+      try {
+        const { sha } = await this._authGet(file, null);
+        this._shas[file] = sha;
+      } catch {}
+    }
+    const newSha = await this._putFile(file, data, this._shas[file] || null, msg);
     this._shas[file] = newSha;
   },
 
-  /* ---- Public API methods (async) ---- */
-  async getPosts()           { return this._cachedGet('posts.json', []) },
-  async savePosts(posts)     { return this._cachedPut('posts.json', posts, 'Update posts.json via MyCMS') },
+  /* ── Public API (same surface, now dual-mode under the hood) */
+  async getPosts()       { return this._cachedGet('posts.json', []) },
+  async savePosts(p)     { return this._cachedPut('posts.json', p, 'Update posts.json via MyCMS') },
 
   async getSettings() {
-    const defaults = { siteTitle:'MyCMS', tagline:'Just another MyCMS site', username:'admin', passwordHash: btoa('admin123') };
+    const defaults = { siteTitle:'MyCMS', tagline:'A GitHub-powered CMS', username:'admin', passwordHash: btoa('admin123') };
     const d = await this._cachedGet('settings.json', null);
     return d || defaults;
   },
-  async saveSettings(s)      { return this._cachedPut('settings.json', s, 'Update settings.json via MyCMS') },
+  async saveSettings(s)  { return this._cachedPut('settings.json', s, 'Update settings.json via MyCMS') },
 
-  async getAbout()           { return this._cachedGet('about.json', { content: '<p>About this site.</p>' }) },
-  async saveAbout(a)         { return this._cachedPut('about.json', a, 'Update about.json via MyCMS') },
+  async getAbout()       { return this._cachedGet('about.json', { content: '<p>About this site.</p>' }) },
+  async saveAbout(a)     { return this._cachedPut('about.json', a, 'Update about.json via MyCMS') },
 
-  async getGallery()         { return this._cachedGet('gallery.json', []) },
-  async saveGallery(g)       { return this._cachedPut('gallery.json', g, 'Update gallery.json via MyCMS') },
+  async getGallery()     { return this._cachedGet('gallery.json', []) },
+  async saveGallery(g)   { return this._cachedPut('gallery.json', g, 'Update gallery.json via MyCMS') },
 
-  async getDownloads()       { return this._cachedGet('downloads.json', []) },
-  async saveDownloads(d)     { return this._cachedPut('downloads.json', d, 'Update downloads.json via MyCMS') },
+  async getDownloads()   { return this._cachedGet('downloads.json', []) },
+  async saveDownloads(d) { return this._cachedPut('downloads.json', d, 'Update downloads.json via MyCMS') },
 
-  /* ---- Verify connection ---- */
+  /* ── Verify authenticated connection (admin only) ────────── */
   async testConnection() {
     const c = this.getConfig();
-    const resp = await fetch(`https://api.github.com/repos/${c.owner}/${c.repo}`, { headers: this._headers() });
+    const resp = await fetch(`https://api.github.com/repos/${c.owner}/${c.repo}`, { headers: this._authHeaders() });
     if (!resp.ok) throw new Error(`Cannot reach repo: ${resp.status}`);
     return await resp.json();
   }
@@ -439,10 +499,6 @@ function buildMediaEmbed(url) {
    ROUTER
    ============================================================ */
 async function router() {
-  /* Normalise bare URL (no hash) to #/ so public home is always the landing page */
-  if (!location.hash || location.hash === '#') {
-    history.replaceState(null, '', '#/');
-  }
   const { parts } = parseHash();
   const hash = location.hash || '#/';
   if (hash.startsWith('#/login'))   { renderLogin(); return }
@@ -465,19 +521,36 @@ async function renderPublic(parts) {
     <footer class="site-footer"><div class="container"></div></footer>`;
   }
 
-  /* Load settings & posts — use safe defaults when GitHub is not yet configured */
-  let settings = { siteTitle: 'MyCMS', tagline: 'Welcome' };
-  let posts = [];
-  const configured = DB.isConfigured();
+  /* ── Public visitors always proceed — no config gate ──────────
+     If owner+repo are unknown we show a setup nudge inline but
+     still render the full shell so the nav & footer are visible. */
+  if (!DB.isConfigured()) {
+    document.body.className = 'public-body';
+    document.body.innerHTML = `
+    <header class="site-header"><div class="container"><div class="header-inner">
+      <span class="logo"><span class="logo-dot"></span>MyCMS</span>
+      <nav class="nav"><a href="#/admin">Admin</a></nav>
+    </div></div></header>
+    <main class="main"><div class="container">
+      <div class="page-head" style="max-width:600px">
+        <h1 class="page-title" style="font-size:36px">Almost there!</h1>
+        <p class="page-desc">Open <code>index.html</code> and fill in the <code>GH_DEFAULTS</code> block at the top of the script with your GitHub username and repo name — no token needed for visitors.</p>
+        <div style="margin-top:24px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+          <a href="#/admin/github" class="btn btn-primary">Configure via Admin UI</a>
+          <a href="https://github.com" target="_blank" class="btn btn-secondary">Open GitHub</a>
+        </div>
+      </div>
+    </div></main>
+    <footer class="site-footer"><div class="container">Powered by MyCMS</div></footer>`;
+    return;
+  }
 
-  if (configured) {
-    try {
-      [settings, posts] = await Promise.all([DB.getSettings(), DB.getPosts()]);
-    } catch(e) {
-      const errEl = document.getElementById('publicContent');
-      if (errEl) errEl.innerHTML = `<div class="empty-state"><h3>Could not load content</h3><p>${escapeHtml(e.message)}</p></div>`;
-      return;
-    }
+  let settings, posts;
+  try {
+    [settings, posts] = await Promise.all([DB.getSettings(), DB.getPosts()]);
+  } catch(e) {
+    document.getElementById('publicContent').innerHTML = `<div class="empty-state"><h3>Could not load content</h3><p>${escapeHtml(e.message)}</p></div>`;
+    return;
   }
 
   const pubPosts = posts.filter(p => p.status==='published').sort((a,b) => new Date(b.date)-new Date(a.date));
@@ -518,13 +591,7 @@ async function renderPublic(parts) {
 
   if (!page) {
     document.querySelector('[data-nav="home"]').classList.add('active');
-    const setupBanner = !configured
-      ? `<div class="wp-notice warning" style="max-width:760px;margin:0 auto 28px">
-           ⚙️ <strong>GitHub not configured.</strong>
-           <a href="#/admin">Go to Admin → GitHub Config</a> to connect your repository and publish content.
-         </div>`
-      : '';
-    content.innerHTML = `${setupBanner}<div class="page-head"><h1 class="page-title">${escapeHtml(settings.siteTitle)}</h1><p class="page-desc">${escapeHtml(settings.tagline)}</p></div>`;
+    content.innerHTML = `<div class="page-head"><h1 class="page-title">${escapeHtml(settings.siteTitle)}</h1><p class="page-desc">${escapeHtml(settings.tagline)}</p></div>`;
     renderPostGrid(content, pubPosts);
 
   } else if (page === 'post' && parts[1]) {
@@ -713,8 +780,8 @@ async function renderAdmin(parts) {
         <div class="admin-topbar">
           <button class="admin-burger" id="adminBurger">☰</button>
           <div class="admin-title" id="adminPageTitle">Dashboard</div>
-          <span class="gh-status ${ghConfigured?'connected':'disconnected'}" id="ghStatusBadge">
-            <span class="gh-dot"></span>${ghConfigured?'GitHub connected':'GitHub not configured'}
+          <span class="gh-status ${DB.hasWriteAccess()?'connected':ghConfigured?'disconnected':'error'}" id="ghStatusBadge">
+            <span class="gh-dot"></span>${DB.hasWriteAccess()?'GitHub: read + write':ghConfigured?'GitHub: read-only (no token)':'GitHub not configured'}
           </span>
           <div class="admin-user">
             <span>Howdy, ${escapeHtml(session.username)}</span>
@@ -740,10 +807,21 @@ async function renderAdmin(parts) {
   const content  = document.getElementById('adminContent');
   const titleEl  = document.getElementById('adminPageTitle');
 
-  /* Guard: most pages need GitHub configured */
+  /* Guard: write-capable pages need at minimum owner+repo.
+     A missing token is surfaced per-action rather than blocking the whole UI,
+     so the admin can still browse content even on a fresh browser. */
   const needsGH = ['posts','new','portfolio','gallery','downloads','about','settings','dashboard'];
   if (!ghConfigured && needsGH.includes(page)) {
-    content.innerHTML = `<div class="wp-notice warning">⚠️ GitHub is not configured yet. <a href="#/admin/github">Go to GitHub Config</a> to connect your repository before managing content.</div>`;
+    content.innerHTML = `
+      <div class="wp-notice warning">
+        ⚠️ GitHub repository not configured.
+        <a href="#/admin/github">Go to GitHub Config →</a>
+      </div>
+      <div class="wp-card"><div class="wp-card-body" style="font-size:14px;line-height:1.8">
+        <p>Fill in the <code>GH_DEFAULTS</code> block in <code>index.html</code> for a permanent fix, or use the
+        <a href="#/admin/github">GitHub Config</a> page to set credentials in this browser.</p>
+        <p style="margin:0"><strong>Visitors</strong> can already see the public site as long as <code>owner</code> and <code>repo</code> are set — no token required for reading.</p>
+      </div></div>`;
     titleEl.textContent = page.charAt(0).toUpperCase()+page.slice(1);
     return;
   }
@@ -1256,123 +1334,171 @@ async function renderSettings(container) {
 
 /* ============================================================
    ADMIN: GITHUB CONFIG
+   Two separate concerns surfaced clearly:
+     • Public identity  (owner + repo)  → enables visitor reads
+     • Write access     (+ token)       → enables admin edits
    ============================================================ */
 function renderGitHubConfig(container) {
-  const cfg = DB.getConfig() || {};
-  const storedCfg = (() => { try { return JSON.parse(localStorage.getItem(DB.GH_CONFIG)||'null') } catch { return null } })();
-  const usingDefaults = !storedCfg && GH_DEFAULTS.token && GH_DEFAULTS.owner && GH_DEFAULTS.repo;
-  const defaultsFilled = GH_DEFAULTS.token && GH_DEFAULTS.owner && GH_DEFAULTS.repo;
+  function redraw() {
+    const cfg          = DB.getConfig() || {};
+    const storedRaw    = (() => { try { return JSON.parse(localStorage.getItem(DB.GH_CONFIG)||'null') } catch { return null } })();
+    const hasDefaults  = !!(GH_DEFAULTS.owner && GH_DEFAULTS.repo);
+    const usingDefaults= hasDefaults && !storedRaw;
+    const hasToken     = !!(cfg.token);
 
-  const defaultsBanner = defaultsFilled
-    ? `<div class="wp-notice success" style="display:flex;align-items:center;gap:10px">
-        <span style="font-size:18px">✅</span>
-        <div><strong>Hardcoded defaults are set</strong> in the <code>GH_DEFAULTS</code> block — the CMS works on any origin automatically.
-        ${usingDefaults ? 'Currently <strong>active</strong> (no localStorage override).' : 'A localStorage override is currently active (saved below).'}</div>
-       </div>`
-    : `<div class="wp-notice warning">
-        <strong>Hardcoded defaults are empty.</strong> Fill in the <code>GH_DEFAULTS</code> block at the top of <code>cms.html</code> so the CMS works on every origin without re-entering credentials:
-        <pre style="margin:8px 0 0;padding:10px;background:#f6f7f7;border-radius:4px;font-size:12px;overflow-x:auto">const GH_DEFAULTS = {\n  token : 'ghp_xxxxxxxxxxxxxxxxxxxx',\n  owner : 'your-username',\n  repo  : 'your-repo-name',\n};</pre>
-       </div>`;
+    const modeBanner = hasToken
+      ? `<div class="wp-notice success" style="display:flex;gap:10px;align-items:center"><span style="font-size:20px">✅</span><div><strong>Read + Write mode active.</strong> Visitors read via CDN. You can create and update content from the admin.</div></div>`
+      : cfg.owner && cfg.repo
+        ? `<div class="wp-notice warning" style="display:flex;gap:10px;align-items:center"><span style="font-size:20px">👁</span><div><strong>Read-only mode.</strong> Visitors can see your site. Add a Personal Access Token below to enable admin writes.</div></div>`
+        : `<div class="wp-notice error" style="display:flex;gap:10px;align-items:center"><span style="font-size:20px">⚠️</span><div><strong>Not configured.</strong> Set at least Owner + Repo so visitors (and you) can load content.</div></div>`;
 
-  container.innerHTML = `
-    <div style="max-width:680px">
-      ${defaultsBanner}
-      <div class="wp-notice" style="font-size:13px">Your token is stored only in your browser and sent only to the GitHub API — never anywhere else.</div>
-      <div class="wp-card"><div class="wp-card-header"><h2 class="wp-card-title">Runtime Override (this browser only)</h2>
-        <span style="font-size:12px;color:var(--wp-gray-50)">Overrides hardcoded defaults on this device</span>
-      </div>
-      <div class="wp-card-body">
-        <div class="gh-config-grid">
-          <div class="form-row gh-token-row">
-            <label class="form-label">Personal Access Token (classic)</label>
-            <div class="token-input-wrap">
-              <input type="password" class="form-input" id="ghToken" value="${escapeHtml(cfg.token||'')}" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx">
-              <button class="token-toggle" id="tokenToggle" type="button">Show</button>
+    container.innerHTML = `
+      <div style="max-width:700px">
+        ${modeBanner}
+
+        <div class="wp-card">
+          <div class="wp-card-header">
+            <h2 class="wp-card-title">Public Identity <span style="font-size:11px;font-weight:400;color:var(--wp-gray-50);margin-left:6px">— required for visitor reads</span></h2>
+          </div>
+          <div class="wp-card-body">
+            <div class="gh-config-grid">
+              <div class="form-row">
+                <label class="form-label">GitHub Username / Org</label>
+                <input type="text" class="form-input" id="ghOwner" value="${escapeHtml(cfg.owner||'')}" placeholder="your-username">
+                <div class="form-hint">The account that owns the repository.</div>
+              </div>
+              <div class="form-row">
+                <label class="form-label">Repository Name</label>
+                <input type="text" class="form-input" id="ghRepo" value="${escapeHtml(cfg.repo||'')}" placeholder="my-cms-repo">
+                <div class="form-hint">Must be a <strong>public</strong> repo for visitor reads to work without a token.</div>
+              </div>
+              <div class="form-row">
+                <label class="form-label">Branch</label>
+                <input type="text" class="form-input" id="ghBranch" value="${escapeHtml(cfg.branch||'main')}" placeholder="main">
+              </div>
             </div>
-            <div class="form-hint">Needs <strong>repo</strong> scope. <a href="https://github.com/settings/tokens/new?scopes=repo&description=MyCMS" target="_blank" rel="noopener">Generate one on GitHub →</a></div>
-          </div>
-          <div class="form-row">
-            <label class="form-label">GitHub Username / Org</label>
-            <input type="text" class="form-input" id="ghOwner" value="${escapeHtml(cfg.owner||'')}" placeholder="your-username">
-          </div>
-          <div class="form-row">
-            <label class="form-label">Repository Name</label>
-            <input type="text" class="form-input" id="ghRepo" value="${escapeHtml(cfg.repo||'')}" placeholder="my-cms-repo">
           </div>
         </div>
-        <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;align-items:center">
-          <button class="btn btn-success" id="testGhBtn">Test Connection</button>
-          <button class="btn btn-primary" id="saveGhBtn">Save to localStorage</button>
-          ${storedCfg ? '<button class="btn btn-danger" id="clearGhBtn">Clear Override</button>' : ''}
+
+        <div class="wp-card">
+          <div class="wp-card-header">
+            <h2 class="wp-card-title">Write Access <span style="font-size:11px;font-weight:400;color:var(--wp-gray-50);margin-left:6px">— required for admin edits only</span></h2>
+          </div>
+          <div class="wp-card-body">
+            <div class="form-row gh-token-row">
+              <label class="form-label">Personal Access Token (classic)</label>
+              <div class="token-input-wrap">
+                <input type="password" class="form-input" id="ghToken" value="${escapeHtml(cfg.token||'')}" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx  (leave blank for read-only)">
+                <button class="token-toggle" id="tokenToggle" type="button">Show</button>
+              </div>
+              <div class="form-hint">Needs <strong>repo</strong> scope. <a href="https://github.com/settings/tokens/new?scopes=repo&description=MyCMS" target="_blank" rel="noopener">Generate one on GitHub →</a><br>Token is stored only in <em>this browser's</em> localStorage — never transmitted anywhere except directly to the GitHub API.</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:20px">
+          <button class="btn btn-primary" id="saveGhBtn">Save to this browser</button>
+          <button class="btn btn-success" id="testGhBtn" ${hasToken?'':'disabled title="Token required to test write connection"'}>Test Write Connection</button>
+          ${storedRaw ? '<button class="btn btn-danger" id="clearGhBtn">Clear Override</button>' : ''}
           <span id="ghTestStatus" style="font-size:13px;line-height:36px"></span>
         </div>
-      </div></div>
 
-      <div class="wp-card"><div class="wp-card-header"><h2 class="wp-card-title">Setup Guide</h2></div>
-      <div class="wp-card-body" style="font-size:14px;line-height:1.8">
-        <ol style="padding-left:20px;margin:0">
-          <li>Create a <strong>public or private GitHub repository</strong> for your CMS content.</li>
-          <li>Generate a <a href="https://github.com/settings/tokens/new?scopes=repo&description=MyCMS" target="_blank">Personal Access Token</a> with <code>repo</code> scope.</li>
-          <li><strong>Recommended (permanent fix):</strong> Edit the <code>GH_DEFAULTS</code> block near the top of <code>cms.html</code>, commit the file — works on every origin forever.</li>
-          <li><strong>Quick fix:</strong> Use the form above to save credentials to localStorage on this browser only.</li>
-          <li>MyCMS will automatically create <code>posts.json</code>, <code>settings.json</code>, <code>about.json</code>, <code>gallery.json</code>, and <code>downloads.json</code> in your repo on first save.</li>
-        </ol>
-        <div style="margin-top:16px;padding:12px;background:var(--wp-gray-5);border-radius:4px;font-size:13px">
-          <strong>Tip for GitHub Pages:</strong> Host <code>cms.html</code> in your repo with <code>GH_DEFAULTS</code> filled in. Set GitHub Pages source to <code>main</code> — your site and CMS live in one file.
+        <div class="wp-card">
+          <div class="wp-card-header"><h2 class="wp-card-title">Permanent Setup (Recommended)</h2></div>
+          <div class="wp-card-body" style="font-size:14px;line-height:1.8">
+            <p style="margin:0 0 12px">Edit the <code>GH_DEFAULTS</code> block near the top of <code>index.html</code> and commit it to your repo. This makes the site work for <em>every</em> visitor on every device with zero configuration:</p>
+            <pre style="background:var(--wp-gray-0);border:1px solid var(--wp-gray-10);border-radius:6px;padding:14px;font-size:13px;overflow-x:auto;margin:0 0 16px">const GH_DEFAULTS = {
+  owner : '${escapeHtml(cfg.owner||'your-username')}',
+  repo  : '${escapeHtml(cfg.repo||'your-repo')}',
+  branch: '${escapeHtml(cfg.branch||'main')}'
+};</pre>
+            <p style="margin:0;font-size:13px;color:var(--wp-gray-50)">The token is <strong>never</strong> hardcoded — only owner + repo go in the file. Visitors read via jsDelivr CDN. You log in and use the admin form above for writes.</p>
+          </div>
         </div>
-      </div></div>
-    </div>`;
 
-  document.getElementById('tokenToggle').addEventListener('click', () => {
-    const inp=document.getElementById('ghToken'), btn=document.getElementById('tokenToggle');
-    if(inp.type==='password'){inp.type='text';btn.textContent='Hide'}else{inp.type='password';btn.textContent='Show'}
-  });
+        <div class="wp-card">
+          <div class="wp-card-header"><h2 class="wp-card-title">How the Dual-Mode System Works</h2></div>
+          <div class="wp-card-body" style="font-size:14px;line-height:1.8">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+              <div style="background:var(--wp-gray-0);border-radius:8px;padding:16px">
+                <div style="font-weight:700;margin-bottom:8px;font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:var(--wp-blue)">👁 Visitor Mode</div>
+                <ul style="margin:0;padding-left:18px">
+                  <li>No token, no config needed</li>
+                  <li>Reads via jsDelivr CDN</li>
+                  <li>Falls back to raw.githubusercontent.com</li>
+                  <li>Zero GitHub API rate-limit usage</li>
+                  <li>Works on any origin</li>
+                </ul>
+              </div>
+              <div style="background:var(--wp-gray-0);border-radius:8px;padding:16px">
+                <div style="font-weight:700;margin-bottom:8px;font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:var(--gh-green)">🔐 Admin Mode</div>
+                <ul style="margin:0;padding-left:18px">
+                  <li>Requires PAT in localStorage</li>
+                  <li>Reads via authenticated API (gets SHA)</li>
+                  <li>Writes via GitHub Contents API PUT</li>
+                  <li>Auto-upgrades read path when token present</li>
+                  <li>Token never leaves your browser</li>
+                </ul>
+              </div>
+            </div>
+            <div style="margin-top:16px;padding:12px;background:var(--wp-gray-5);border-radius:4px;font-size:13px">
+              <strong>GitHub Pages tip:</strong> Host <code>index.html</code> in the same repo. Set Pages source to <code>main</code> branch root. Your site and CMS live in one file — no build step needed.
+            </div>
+          </div>
+        </div>
+      </div>`;
 
-  if (storedCfg) {
-    document.getElementById('clearGhBtn').addEventListener('click', () => {
-      if (!confirm('Remove localStorage override? The hardcoded GH_DEFAULTS will be used instead.')) return;
-      localStorage.removeItem(DB.GH_CONFIG);
+    document.getElementById('tokenToggle').addEventListener('click', () => {
+      const inp=document.getElementById('ghToken'), btn=document.getElementById('tokenToggle');
+      if(inp.type==='password'){inp.type='text';btn.textContent='Hide'}else{inp.type='password';btn.textContent='Show'}
+    });
+
+    if (storedRaw) {
+      document.getElementById('clearGhBtn').addEventListener('click', () => {
+        if (!confirm('Remove localStorage override? GH_DEFAULTS will be used instead.')) return;
+        localStorage.removeItem(DB.GH_CONFIG); DB._shas={};
+        toast('Override cleared'); redraw();
+      });
+    }
+
+    document.getElementById('saveGhBtn').addEventListener('click', () => {
+      const owner = document.getElementById('ghOwner').value.trim();
+      const repo  = document.getElementById('ghRepo').value.trim();
+      const branch= document.getElementById('ghBranch').value.trim() || 'main';
+      const token = document.getElementById('ghToken').value.trim();
+      if (!owner || !repo) { toast('Owner and Repo are required.','error'); return }
+      DB.saveConfig({ owner, repo, branch, ...(token ? { token } : {}) });
       DB._shas={};
-      toast('Override cleared. Using GH_DEFAULTS now.');
-      renderGitHubConfig(container);
+      toast(token ? 'Saved — read + write mode active ✓' : 'Saved — read-only mode active ✓');
+      redraw();
+      const badge=document.getElementById('ghStatusBadge');
+      if(badge){
+        const mode = DB.hasWriteAccess() ? 'connected' : 'disconnected';
+        const label= DB.hasWriteAccess() ? 'GitHub: read + write' : 'GitHub: read-only (no token)';
+        badge.className=`gh-status ${mode}`;
+        badge.innerHTML=`<span class="gh-dot"></span>${label}`;
+      }
+    });
+
+    document.getElementById('testGhBtn').addEventListener('click', async () => {
+      const btn=document.getElementById('testGhBtn'), status=document.getElementById('ghTestStatus');
+      btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Testing…'; status.textContent='';
+      try {
+        const repoData=await DB.testConnection();
+        status.style.color='#1f6b2c';
+        status.textContent=`✓ Connected to ${repoData.full_name} (${repoData.private?'private':'public'})`;
+        toast('Write connection verified ✓');
+        const badge=document.getElementById('ghStatusBadge');
+        if(badge){badge.className='gh-status connected';badge.innerHTML='<span class="gh-dot"></span>GitHub: read + write'}
+      } catch(e) {
+        status.style.color='#d63638';
+        status.textContent='✗ '+e.message;
+        toast('Connection failed: '+e.message,'error');
+      }
+      btn.disabled=false; btn.textContent='Test Write Connection';
     });
   }
-
-  document.getElementById('saveGhBtn').addEventListener('click', () => {
-    const token=document.getElementById('ghToken').value.trim();
-    const owner=document.getElementById('ghOwner').value.trim();
-    const repo=document.getElementById('ghRepo').value.trim();
-    if(!token||!owner||!repo){toast('All three fields are required.','error');return}
-    DB.saveConfig({token,owner,repo});
-    DB._shas={};
-    toast('Saved to localStorage!');
-    const badge=document.getElementById('ghStatusBadge');
-    if(badge){badge.className='gh-status connected';badge.innerHTML='<span class="gh-dot"></span>GitHub connected'}
-    renderGitHubConfig(container);
-  });
-
-  document.getElementById('testGhBtn').addEventListener('click', async () => {
-    const btn=document.getElementById('testGhBtn'), status=document.getElementById('ghTestStatus');
-    const token=document.getElementById('ghToken').value.trim();
-    const owner=document.getElementById('ghOwner').value.trim();
-    const repo=document.getElementById('ghRepo').value.trim();
-    if(!token||!owner||!repo){toast('Fill in all fields first.','error');return}
-    DB.saveConfig({token,owner,repo}); DB._shas={};
-    btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Testing…'; status.textContent='';
-    try {
-      const repoData=await DB.testConnection();
-      status.style.color='#1f6b2c';
-      status.textContent=`✓ Connected to ${repoData.full_name} (${repoData.private?'private':'public'})`;
-      toast('GitHub connection successful!');
-      const badge=document.getElementById('ghStatusBadge');
-      if(badge){badge.className='gh-status connected';badge.innerHTML='<span class="gh-dot"></span>GitHub connected'}
-    } catch(e) {
-      status.style.color='#d63638';
-      status.textContent='✗ ' + e.message;
-      toast('Connection failed: '+e.message,'error');
-    }
-    btn.disabled=false; btn.textContent='Test Connection';
-  });
+  redraw();
 }
 
 /* ============================================================
