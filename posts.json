@@ -7,11 +7,13 @@
     "excerpt": "test portfolio post",
     "featuredImage": "",
     "mediaUrl": "",
-    "category": "Uncategorized",
-    "tags": [],
+    "category": "Youtube",
+    "tags": [
+      "drawing"
+    ],
     "status": "published",
     "isPortfolio": true,
-    "date": "2026-05-25T04:45:00.000Z",
+    "date": "2026-05-24T20:45:00.000Z",
     "author": "junebiago"
   }
 ]
