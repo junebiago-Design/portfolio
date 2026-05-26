@@ -1,2 +1,2 @@
 # portfolio
-personal CMS Portfoli Blog
+personal CMS Portfolio Blog
