@@ -3,7 +3,7 @@
     "id": "mpl79a9p0mme5",
     "title": "Speed Draw",
     "slug": "speed-draw",
-    "content": "<a href=\"https://www.youtube.com/watch?v=OR7lQENKjfc\">https://www.youtube.com/watch?v=OR7lQENKjfc</a>",
+    "content": "<span style=\"font-size: 15px;\">&lt;iframe width=\"560\" height=\"315\" src=\"https://www.youtube.com/embed/Oaj3RBIoGFc?si=vWzVoGoLEsBK3z1Y\" title=\"YouTube video player\" frameborder=\"0\" allow=\"accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share\" referrerpolicy=\"strict-origin-when-cross-origin\" allowfullscreen&gt;&lt;/iframe&gt;</span>",
     "excerpt": "test portfolio post",
     "featuredImage": "",
     "mediaUrl": "",
@@ -13,7 +13,7 @@
     ],
     "status": "published",
     "isPortfolio": true,
-    "date": "2026-05-24T20:45:00.000Z",
+    "date": "2026-05-24T12:45:00.000Z",
     "author": "junebiago"
   }
 ]
