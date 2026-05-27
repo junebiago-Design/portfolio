@@ -9,9 +9,9 @@
     "mediaUrl": "https://encrypted-tbn1.gstatic.com/images?q=tbn:ANd9GcRlh5rtk4GM_3RGhS2OEPEE470mV8QXa0eG-V2cKiacGoixPc3z",
     "category": "Movies",
     "tags": [],
-    "status": "draft",
-    "isPortfolio": false,
-    "date": "2026-05-27T04:43:00.000Z",
+    "status": "published",
+    "isPortfolio": true,
+    "date": "2026-05-26T20:43:00.000Z",
     "author": "junebiago"
   },
   {
