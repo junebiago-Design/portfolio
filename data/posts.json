@@ -1,0 +1,59 @@
+[
+    {
+        "id": "1780320448233",
+        "title": "tesdjskajdksajd",
+        "slug": "tesdjskajdksajd",
+        "content": "dsadsadsa<div><br><\/div><div><a href=\"https:\/\/chatgpt.com\/c\/6a1689c0-61e8-83ec-9192-11a12f2ec4a0\" target=\"_blank\" rel=\"noopener\" class=\"inline-link-btn\">test ↗<\/a><\/div>",
+        "excerpt": "dsadsadsa\n\n\ntest ↗",
+        "featuredImage": "https:\/\/files.catbox.moe\/quw5m4.jpeg",
+        "category": "News",
+        "tags": [],
+        "status": "published",
+        "showOnHome": true,
+        "date": "2026-05-31T21:26:00.000Z",
+        "author": "admin",
+        "videos": [],
+        "gallery": [
+            "https:\/\/files.catbox.moe\/tc6auz.webp"
+        ],
+        "shareCount": 0
+    },
+    {
+        "id": "1",
+        "title": "Hello World!",
+        "slug": "hello-world",
+        "content": "<p>Welcome to <strong>Test<\/strong>. This is your first post. You can edit or delete it from the admin dashboard.<\/p>",
+        "excerpt": "Welcome to Test.",
+        "featuredImage": "",
+        "category": "News",
+        "tags": [
+            "welcome"
+        ],
+        "status": "published",
+        "showOnHome": true,
+        "date": "2026-05-29T09:17:28-04:00",
+        "author": "xxx",
+        "videos": [],
+        "gallery": [],
+        "shareCount": 0
+    },
+    {
+        "id": "2",
+        "title": "Getting Started with MyCMS",
+        "slug": "getting-started",
+        "content": "<p>MyCMS makes it easy to create and manage content without a database. All data is stored as JSON files.<\/p><p>You can add videos, galleries, and more. Log in to the admin area to start building your site.<\/p>",
+        "excerpt": "Learn how to use MyCMS, a flat‑file CMS.",
+        "featuredImage": "",
+        "category": "Tutorial",
+        "tags": [
+            "guide"
+        ],
+        "status": "published",
+        "showOnHome": true,
+        "date": "2026-05-31T09:17:28-04:00",
+        "author": "xxx",
+        "videos": [],
+        "gallery": [],
+        "shareCount": 1
+    }
+]

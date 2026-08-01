@@ -1,0 +1,31 @@
+{
+    "siteTitle": "Test",
+    "tagline": "Just another MyCMS site",
+    "homepageHeadline": "WELCOME TO MY SITE",
+    "faviconUrl": "",
+    "logoUrl": "",
+    "username": "xxx",
+    "passwordHash": "MTIzNA==",
+    "homepageDisplay": "all",
+    "siteUrl": "https:\/\/junebiago.free.nf\/code",
+    "socialFacebook": "",
+    "socialInstagram": "",
+    "socialLinkedin": "",
+    "socialBehance": "",
+    "socialMail": "",
+    "contactEnabled": true,
+    "contactAlertEmail": "junebiago@gmail.com",
+    "contactSubjects": [
+        "General Inquiry",
+        "Support",
+        "Partnership",
+        "Feedback",
+        "Other"
+    ],
+    "contactAutoReply": true,
+    "contactAutoReplyMsg": "Thank you for reaching out! We've received your message and will get back to you within 1-2 business days.",
+    "contactPrivacyUrl": "",
+    "aboutContent": "<p>Welcome to <strong>Test<\/strong>. This is your About page. You can edit this content in the admin area.<\/p>",
+    "aboutGallery": [],
+    "siteGallery": []
+}

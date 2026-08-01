@@ -1,0 +1,27 @@
+[
+    {
+        "id": "cat-1",
+        "name": "News",
+        "slug": "news"
+    },
+    {
+        "id": "cat-2",
+        "name": "Tutorial",
+        "slug": "tutorial"
+    },
+    {
+        "id": "cat-3",
+        "name": "Opinion",
+        "slug": "opinion"
+    },
+    {
+        "id": "cat-4",
+        "name": "Ideas",
+        "slug": "ideas"
+    },
+    {
+        "id": "cat-5",
+        "name": "Uncategorized",
+        "slug": "uncategorized"
+    }
+]
